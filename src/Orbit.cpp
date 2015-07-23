@@ -9,6 +9,15 @@
 	#include "win32/WinMath.h"
 #endif
 
+bool Orbit::operator ==(const Orbit& orbit) const
+{
+    return std::fabs(m_eccentricity - orbit.m_eccentricity) < 0.0001 &&
+        std::fabs(m_semiMajorAxis - orbit.m_semiMajorAxis) < 0.0001 &&
+        std::fabs(m_orbitalPhaseAtStart - orbit.m_orbitalPhaseAtStart) < 0.0001 &&
+        std::fabs(m_velocityAreaPerSecond - orbit.m_velocityAreaPerSecond) < 0.0001 &&
+        m_orient == orbit.m_orient;
+}
+
 double Orbit::OrbitalPeriod(double semiMajorAxis, double centralMass)
 {
 	return 2.0*M_PI*sqrt((semiMajorAxis*semiMajorAxis*semiMajorAxis)/(G*centralMass));
@@ -138,6 +147,50 @@ vector3d Orbit::OrbitalPosAtTime(double t) const
 	return m_orient * vector3d(-cos_v*r, sin_v*r, 0);
 }
 
+double Orbit::OrbitalTimeAtPos(const vector3d& pos, double centralMass) const
+{
+	double c = m_eccentricity * m_semiMajorAxis;
+	matrix3x3d matrixInv = m_orient.Inverse();
+	vector3d approx3dPos = (matrixInv * pos - vector3d(c, 0., 0.)).Normalized();
+
+	double cos_v = -vector3d(1., 0., 0.).Dot(approx3dPos);
+	double sin_v = std::copysign(vector3d(1., 0., 0.).Cross(approx3dPos).Length(), approx3dPos.y);
+
+	double cos_E = (cos_v + m_eccentricity) / (1. + m_eccentricity * cos_v);
+	double E;
+	double meanAnomaly;
+	if(m_eccentricity <= 1.)
+	{
+		E = std::acos(cos_E);
+		if(sin_v < 0)
+			E *= -1.;
+		meanAnomaly = E - m_eccentricity * std::sin(E);
+	}
+	else
+	{
+		E = std::acosh(cos_E);
+		if(sin_v < 0)
+			E *= -1.;
+		meanAnomaly = E - m_eccentricity * std::sinh(E);
+	}
+	
+	if(m_eccentricity <= 1.)
+	{
+		meanAnomaly -= m_orbitalPhaseAtStart;
+		while(meanAnomaly < 0)
+			meanAnomaly += 2. * M_PI;
+	}
+	else if(meanAnomaly < 0.)
+		meanAnomaly += m_orbitalPhaseAtStart;
+
+	if(m_eccentricity <= 1.)
+		return meanAnomaly * Period() / (2. * M_PI);
+	else if(meanAnomaly < 0.)
+		return -meanAnomaly * std::sqrt(std::pow(m_semiMajorAxis, 3) / (G * centralMass));
+	else
+		return - std::fabs(meanAnomaly + m_orbitalPhaseAtStart) * std::sqrt(std::pow(m_semiMajorAxis, 3) / (G * centralMass));
+}
+
 vector3d Orbit::OrbitalVelocityAtTime(double totalMass, double t) const
 {
 	double cos_v, sin_v, r;
@@ -145,7 +198,7 @@ vector3d Orbit::OrbitalVelocityAtTime(double totalMass, double t) const
 
 	double mi = G * totalMass;
 	double p;
-	if(m_eccentricity < 1.)
+	if(m_eccentricity <= 1.)
 		p = (1. - m_eccentricity * m_eccentricity) * m_semiMajorAxis;
 	else
 		p = (m_eccentricity * m_eccentricity - 1.) * m_semiMajorAxis;

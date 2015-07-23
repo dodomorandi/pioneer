@@ -118,6 +118,7 @@ public:
 	static sigc::signal<void, int, int, int> onMouseButtonUp;
 	static sigc::signal<void, int, int, int> onMouseButtonDown;
 	static sigc::signal<void, bool> onMouseWheel;
+	static sigc::signal<void, int, int> onMouseMotion;
 	static sigc::signal<void> onPlayerChangeTarget; // navigation or combat
 	static sigc::signal<void> onPlayerChangeFlightControlState;
 

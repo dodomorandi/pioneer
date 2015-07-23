@@ -87,6 +87,7 @@ sigc::signal<void, SDL_Keysym*> Pi::onKeyRelease;
 sigc::signal<void, int, int, int> Pi::onMouseButtonUp;
 sigc::signal<void, int, int, int> Pi::onMouseButtonDown;
 sigc::signal<void, bool> Pi::onMouseWheel;
+sigc::signal<void, int, int> Pi::onMouseMotion;
 sigc::signal<void> Pi::onPlayerChangeTarget;
 sigc::signal<void> Pi::onPlayerChangeFlightControlState;
 LuaSerializer *Pi::luaSerializer;
@@ -943,6 +944,7 @@ void Pi::HandleEvents()
 			case SDL_MOUSEMOTION:
 				Pi::mouseMotion[0] += event.motion.xrel;
 				Pi::mouseMotion[1] += event.motion.yrel;
+				Pi::onMouseMotion.emit(event.motion.x, event.motion.y);
 		//		SDL_GetRelativeMouseState(&Pi::mouseMotion[0], &Pi::mouseMotion[1]);
 				break;
 			case SDL_JOYAXISMOTION:

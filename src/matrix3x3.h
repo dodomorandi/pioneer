@@ -17,6 +17,19 @@ class matrix3x3 {
 	matrix3x3 (const T *vals) {
 		memcpy(cell, vals, sizeof(T)*9);
 	}
+
+	template <typename U> bool operator ==(const matrix3x3<U>& m) const {
+		static constexpr auto minDiff = std::numeric_limits<decltype(U() - T())>::min() * 10;
+		const T* iCell = cell;
+		const U* imCell = m.cell;
+		for(unsigned n = 0; n < 9; ++n, ++iCell, ++imCell)
+		{
+			if(std::fabs(cell[0] - m.cell[0]) > minDiff)
+				return false;
+		}
+		return true;
+	}
+
 	T& operator [] (const size_t i) { return cell[i]; }			// used for serializing
 	const T& operator[] (const size_t i) const { return cell[i]; }
 

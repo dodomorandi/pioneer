@@ -22,6 +22,8 @@
 using namespace Graphics;
 
 const double SystemView::PICK_OBJECT_RECT_SIZE = 12.0;
+static constexpr float MOUSE_2D_DISTANCE_THRESHOLD = 10.f;
+static constexpr float MOUSE_3D_DISTANCE_THRESHOLD = 0.3f;
 static const float MIN_ZOOM = 1e-30f;		// Just to avoid having 0
 static const float MAX_ZOOM = 1e30f;
 static const float ZOOM_IN_SPEED = 2;
@@ -94,11 +96,36 @@ double TransferPlanner::GetStartTime() const {
 	return m_startTime;
 }
 
-std::string TransferPlanner::printStartTime() {
-	if(m_startTime < 1.)
-		return "Now";
+static std::string formatTime(double t)
+{
+    std::stringstream formattedTime;
+    formattedTime << std::setprecision(1) << std::fixed;
+    if(t < 60.)
+        formattedTime << t << "s";
+    else if(t < 3600)
+        formattedTime << t / 60. << "m";
+    else if(t < 86400)
+        formattedTime << t / 3600. << "h";
+    else
+        formattedTime << t / 86400. << "y";
+    return formattedTime.str(); 
+}
 
-	return format_date(m_startTime);
+std::string TransferPlanner::printDeltaTime() {
+	std::stringstream out;
+	out << std::setw(9);
+	double deltaT = m_startTime - Pi::game->GetTime();
+	if(m_startTime < 1.)
+		out << "Now";
+	else if(deltaT < 1.)
+	{
+		m_startTime = 0;
+		out << "Now";
+	}
+	else
+		out << formatTime(deltaT); 
+
+	return out.str();
 }
 
 void TransferPlanner::AddDv(BurnDirection d, double dv) {
@@ -160,7 +187,7 @@ void TransferPlanner::DecreaseFactor(void) {
 
 std::string TransferPlanner::printFactor(void) {
 	char buf[10];
-	snprintf(buf, sizeof(buf), "%6gx", 10 * m_factor);
+	snprintf(buf, sizeof(buf), "%8gx", 10 * m_factor);
 	return std::string(buf);
 }
 
@@ -184,6 +211,9 @@ SystemView::SystemView(Game* game) : UIView(), m_game(game)
 	m_shipLabels = new Gui::LabelSet();
 	Add(m_shipLabels, 0, 0);
 	Gui::Screen::PopFont();
+
+	m_orbitInfo = (new Gui::Label(""))->Color(178, 178, 178);
+	Add(m_orbitInfo, 0, 0);
 
 	m_timePoint = (new Gui::Label(""))->Color(178, 178, 178);
 	Add(m_timePoint, 2, Gui::Screen::GetHeight()-Gui::Screen::GetFontHeight()-66);
@@ -343,6 +373,9 @@ SystemView::SystemView(Game* game) : UIView(), m_game(game)
 	m_onMouseWheelCon =
 		Pi::onMouseWheel.connect(sigc::mem_fun(this, &SystemView::MouseWheel));
 
+	m_onMouseMotionCon =
+		Pi::onMouseMotion.connect(sigc::mem_fun(this, &SystemView::MouseMotion));
+
 	Graphics::TextureBuilder b1 = Graphics::TextureBuilder::UI("icons/periapsis.png");
 	m_periapsisIcon.reset(new Gui::TexturedQuad(b1.GetOrCreateTexture(Gui::Screen::GetRenderer(), "ui")));
 	Graphics::TextureBuilder b2 = Graphics::TextureBuilder::UI("icons/apoapsis.png");
@@ -363,6 +396,7 @@ SystemView::~SystemView()
 {
 	m_contacts.clear();
 	m_onMouseWheelCon.disconnect();
+	m_onMouseMotionCon.disconnect();
 }
 
 void SystemView::OnClickAccel(float step)
@@ -401,24 +435,34 @@ void SystemView::ResetViewpoint()
 
 void SystemView::PutOrbit(const Orbit *orbit, const vector3d &offset, const Color &color, double planetRadius)
 {
+	OrbitProjectedPoints projectedPoints { .orbit = *orbit, .offset = offset};
+	projectedPoints.points.reserve(100);
+
 	int num_vertices = 0;
 	vector3f vts[100];
 	for (int i = 0; i < int(COUNTOF(vts)); ++i) {
 		const double t = double(i) / double(COUNTOF(vts));
 		const vector3d pos = orbit->EvenSpacedPosTrajectory(t);
-		vts[i] = vector3f(offset + pos * double(m_zoom));
+		vector3d newVertex = offset + pos * double(m_zoom); 
+
+		vector3d screenPoint;
+		Gui::Screen::Project(newVertex, screenPoint);
+		projectedPoints.points.emplace_back(std::make_pair(vector2f(screenPoint.x, screenPoint.y), pos));
+		
+		vts[i] = vector3f(newVertex);
 		++num_vertices;
 		if (pos.Length() < planetRadius)
 			break;
 	}
 
 	if (num_vertices > 1) {
-		m_orbits.SetData(num_vertices, vts, color);
+		m_projectedPoints.emplace_back(std::move(projectedPoints));
+		m_orbitsLines.SetData(num_vertices, vts, color);
 		// don't close the loop for hyperbolas and parabolas and crashed ellipses
 		if ((orbit->GetEccentricity() > 1.0) || (num_vertices < int(COUNTOF(vts)))) {
-			m_orbits.Draw(m_renderer, m_lineState, LINE_STRIP);
+			m_orbitsLines.Draw(m_renderer, m_lineState, LINE_STRIP);
 		} else {
-			m_orbits.Draw(m_renderer, m_lineState, LINE_LOOP);
+			m_orbitsLines.Draw(m_renderer, m_lineState, LINE_LOOP);
 		}
 	}
 
@@ -582,25 +626,29 @@ void SystemView::PutBody(const SystemBody *b, const vector3d &offset, const matr
 		PutLabel(b, offset);
 	}
 
+	m_orbits.clear();
 	Frame *frame = Pi::player->GetFrame();
 	if(frame->IsRotFrame()) frame = frame->GetNonRotFrame();
 	if(frame->GetSystemBody() == b && frame->GetSystemBody()->GetMass() > 0) {
 		const double t0 = m_game->GetTime();
-		Orbit playerOrbit = Pi::player->ComputeOrbit();
+		m_orbits.emplace_back(Pi::player->ComputeOrbit());
+		Orbit& playerOrbit = m_orbits.back();
 
 		PutOrbit(&playerOrbit, offset, Color::RED, b->GetRadius());
 
 		double plannerStartTime = m_planner->GetStartTime();
-		if(std::fabs(plannerStartTime) < 1. and t0 > plannerStartTime)
+		if(std::fabs(plannerStartTime) < 1. && t0 > plannerStartTime)
 			m_planner->ResetStartTime();
 		
 		if(!m_planner->GetPosition().ExactlyEqual(vector3d(0,0,0))) {
-			Orbit plannedOrbit = Orbit::FromBodyState(m_planner->GetPosition(),
-								  m_planner->GetVel(),
-								  frame->GetSystemBody()->GetMass());
+			m_orbits.emplace_back(Orbit::FromBodyState(m_planner->GetPosition(),
+					m_planner->GetVel(),
+					frame->GetSystemBody()->GetMass()));
+
+			Orbit& plannedOrbit = m_orbits.back();
 			PutOrbit(&plannedOrbit, offset, Color::STEELBLUE, b->GetRadius());
 			Draw(Icon::MANEUVER, offset + m_planner->GetPosition() * static_cast<double>(m_zoom));
-			if(std::fabs(m_time - t0) > 1. and (m_time - plannerStartTime) > 0.)
+			if(std::fabs(m_time - t0) > 1. && (m_time - plannerStartTime) > 0.)
 				Draw(Icon::SHIP, offset + plannedOrbit.OrbitalPosAtTime(m_time - plannerStartTime) * static_cast<double>(m_zoom), &Color::STEELBLUE);
 		}
 
@@ -693,6 +741,7 @@ void SystemView::Draw3D()
 		}
 	}
 
+	m_projectedPoints.clear();
 	if (m_realtime) {
 		m_time = m_game->GetTime();
 	}
@@ -739,6 +788,48 @@ void SystemView::Draw3D()
 		DrawShips(m_time - m_game->GetTime(), pos);
 	}
 
+	const std::unique_ptr<Orbit>& orbit = std::get<0>(m_drawableInfo);
+	if(std::get<0>(m_drawableInfo) && 
+			(m_orbits[0] == *orbit || 
+			 (!m_planner->GetPosition().ExactlyEqual(vector3d(0,0,0)) &&
+			  m_orbits[1] == *orbit)))
+	{
+		const vector3d& offset = std::get<1>(m_drawableInfo);
+		const vector2f& position2d = std::get<2>(m_drawableInfo);
+		vector3d position3d = std::get<3>(m_drawableInfo);
+		vector3d absolutePos = offset + position3d * double(m_zoom);
+		RemoveChild(m_orbitInfo);
+		Add(m_orbitInfo, position2d.x + 30, position2d.y + 30);
+		std::stringstream labelText;
+
+		vector3d perigeumPos = offset + orbit->Perigeum() * double(m_zoom);
+		vector3d apogeumPos = offset + orbit->Apogeum() * double(m_zoom);
+		if((absolutePos - perigeumPos).Length() < MOUSE_3D_DISTANCE_THRESHOLD)
+		{
+			labelText << "Perigeum" << std::endl;
+			absolutePos = perigeumPos;
+			position3d = absolutePos / double(m_zoom) - offset;
+		}
+		else if((absolutePos - apogeumPos).Length() < MOUSE_3D_DISTANCE_THRESHOLD)
+		{
+			labelText << "Apogeum" << std::endl;
+			absolutePos = apogeumPos;
+			position3d = absolutePos / double(m_zoom) - offset;
+		}
+		
+		PutSelectionBox(absolutePos, Color::GREEN);
+
+		double mass = Pi::player->GetFrame()->GetNonRotFrame()->GetSystemBody()->GetMass();
+		double deltaT = orbit->OrbitalTimeAtPos(position3d, mass);
+		if(!m_planner->GetPosition().ExactlyEqual(vector3d(0,0,0)) &&
+		   m_orbits[1] == *orbit && m_planner->GetStartTime() > 0)
+			deltaT += m_planner->GetStartTime() - Pi::game->GetTime();
+		labelText << "ETA: " << formatTime(deltaT);
+		m_orbitInfo->SetText(labelText.str());
+	}
+	else
+		m_orbitInfo->SetText("");
+
 	UIView::Draw3D();
 }
 
@@ -769,11 +860,10 @@ void SystemView::Update()
 		if (m_plannerZeroRadialVelButton->IsPressed())     { m_planner->ResetDv(RADIAL);   }
 
 		m_plannerFactorText->SetText(m_planner->printFactor());
-		m_plannerStartTimeText->SetText(m_planner->printStartTime());
+		m_plannerStartTimeText->SetText(m_planner->printDeltaTime());
 		m_plannerProgradeDvText->SetText(m_planner->printDv(PROGRADE));
 		m_plannerNormalDvText->SetText(m_planner->printDv(NORMAL));
 		m_plannerRadialDvText->SetText(m_planner->printDv(RADIAL));
-
 	}
 	// TODO: add "true" lower/upper bounds to m_zoomTo / m_zoom
 	m_zoomTo = Clamp(m_zoomTo, MIN_ZOOM, MAX_ZOOM);
@@ -781,6 +871,7 @@ void SystemView::Update()
 	AnimationCurves::Approach(m_zoom, m_zoomTo, ft);
 
 	if (Pi::MouseButtonState(SDL_BUTTON_RIGHT)) {
+		std::get<0>(m_drawableInfo).reset();
 		int motion[2];
 		Pi::GetMouseMotion(motion);
 		m_rot_x += motion[1]*20*ft;
@@ -792,12 +883,49 @@ void SystemView::Update()
 
 void SystemView::MouseWheel(bool up)
 {
+	std::get<0>(m_drawableInfo).reset();
 	if (this == Pi::GetView()) {
 		if (!up)
 			m_zoomTo *= ((ZOOM_OUT_SPEED-1) * WHEEL_SENSITIVITY+1) / Pi::GetMoveSpeedShiftModifier();
 		else
 			m_zoomTo *= ((ZOOM_IN_SPEED-1) * WHEEL_SENSITIVITY+1) * Pi::GetMoveSpeedShiftModifier();
 	}
+}
+
+void SystemView::MouseMotion(int x, int y) {
+	if (Pi::MouseButtonState(SDL_BUTTON_RIGHT | SDL_BUTTON_LEFT))
+		return;
+	vector2f mousePosition(x, y);
+	float minSqrDistance(std::numeric_limits<float>::infinity());
+	std::tuple<const Orbit*, const vector3d*, const vector2f*, const vector3d*> bestResult;
+	
+	std::get<2>(bestResult) = nullptr;
+	for(const OrbitProjectedPoints& projectedPoints : m_projectedPoints)
+	{
+		const vector2f* lastGoodPosition = std::get<2>(bestResult);
+		for(auto& mdPoint : projectedPoints.points)
+		{
+			const vector2f& point = mdPoint.first;
+			float sqrDistance = (point - mousePosition).LengthSqr();
+			if(sqrDistance < minSqrDistance)
+			{
+				std::get<2>(bestResult) = &point;
+				std::get<3>(bestResult) = &(mdPoint.second);
+				minSqrDistance = sqrDistance;
+			}
+		}
+
+		if(std::get<2>(bestResult) != lastGoodPosition)
+        {
+			std::get<0>(bestResult) = &(projectedPoints.orbit);
+            std::get<1>(bestResult) = &(projectedPoints.offset);
+        }
+	}
+
+	if(std::sqrt(minSqrDistance) < MOUSE_2D_DISTANCE_THRESHOLD)
+		m_drawableInfo = std::make_tuple(std::unique_ptr<Orbit>(new Orbit(*std::get<0>(bestResult))), *std::get<1>(bestResult), *std::get<2>(bestResult), *std::get<3>(bestResult));
+	else
+		std::get<0>(m_drawableInfo) = nullptr;
 }
 
 void SystemView::RefreshShips(void) {
@@ -849,6 +977,7 @@ void SystemView::Draw(Icon icon, const vector3d &worldPos, const Color* const co
 
 void SystemView::DrawShips(const double t, const vector3d &offset) {
 	m_shipLabels->Clear();
+	// XXX These orbits are not included for the count of projected points... for now.
 	for(auto s = m_contacts.begin(); s != m_contacts.end(); s++) {
 		const vector3d pos = offset + (*s).second.OrbitalPosAtTime(t) * double(m_zoom);
 		const bool isNavTarget = Pi::player->GetNavTarget() == (*s).first;
