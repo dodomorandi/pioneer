@@ -81,7 +81,6 @@ private:
 	void OnToggleShipsButtonClick(void);
 	void ResetViewpoint();
 	void MouseWheel(bool up);
-	void MouseMotion(int x, int y);
 	void RefreshShips(void);
 	void Draw(Icon icon, const vector3d &worldPos, const Color* const color = nullptr);
 	void DrawShips(const double t, const vector3d &offset);
@@ -117,10 +116,8 @@ private:
 	Gui::Label *m_infoLabel;
 	Gui::Label *m_infoText;
 	Gui::Label *m_plannerFactorText, *m_plannerStartTimeText, *m_plannerProgradeDvText, *m_plannerNormalDvText, *m_plannerRadialDvText;
-	Gui::Label *m_orbitInfo;
 	Gui::LabelSet *m_objectLabels;
 	sigc::connection m_onMouseWheelCon;
-	sigc::connection m_onMouseMotionCon;
 
 	std::unique_ptr<Graphics::Drawables::Disk> m_bodyIcon;
 	std::unique_ptr<Gui::TexturedQuad> m_periapsisIcon;
@@ -128,19 +125,8 @@ private:
 	std::unique_ptr<Gui::TexturedQuad> m_shipIcon;
 	std::unique_ptr<Gui::TexturedQuad> m_maneuverIcon;
 	Graphics::RenderState *m_lineState;
-	Graphics::Drawables::Lines m_orbitsLines;
+	Graphics::Drawables::Lines m_orbits;
 	Graphics::Drawables::Lines m_selectBox;
-
-	std::vector<Orbit> m_orbits;
-
-	struct OrbitProjectedPoints
-	{
-		const Orbit& orbit;
-        vector3d offset;
-		std::vector<std::pair<vector2f, vector3d>> points;
-	};
-	std::vector<OrbitProjectedPoints> m_projectedPoints;
-	std::tuple<std::unique_ptr<Orbit>, vector3d, vector2f, vector3d> m_drawableInfo;
 };
 
 #endif /* _SYSTEMVIEW_H */
